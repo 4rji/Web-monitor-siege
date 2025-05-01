@@ -136,6 +136,3 @@ Watch your dashboard update in real time.
 
 MIT License
 
----
-
-Let me know if you want to include auto-build instructions, Dockerfile, or deploy it to something like Fly.io.
