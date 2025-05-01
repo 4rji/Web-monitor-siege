@@ -19,7 +19,7 @@ This project includes 3 Go-based tools designed to simulate, monitor, and stress
 ### 1. Start the Monitoring Web Server
 
 <p align="center">
-  <img src="images/dashboard1.webp" alt="Live Dashboard" width="60%">
+  <img src="images/dashboard1.webp" alt="Live Dashboard" width="80%">
 </p>
 
 
@@ -115,13 +115,13 @@ Watch your dashboard update in real time.
 
 
 <p align="center">
-  <img src="images/dashboard2.webp" alt="Live Dashboard" width="60%">
+  <img src="images/dashboard2.webp" alt="Live Dashboard" width="80%">
 </p>
 
 ⸻
 
 <p align="center">
-  <img src="images/dashboard3.webp" alt="Live Dashboard" width="60%">
+  <img src="images/dashboard3.webp" alt="Live Dashboard" width="80%">
 </p>
 ⸻
 
