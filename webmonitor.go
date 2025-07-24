@@ -1,100 +1,124 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"html/template"
-	"log"
-	"net"
-	"net/http"
-	"os/exec"
-	"runtime"
-	"sync"
-	"time"
+  "encoding/json"
+  "fmt"
+  "html/template"
+  "log"
+  "net"
+  "net/http"
+  "os/exec"
+  "runtime"
+  "sync"
+  "time"
 )
 
 type RequestEntry struct {
-	IP        string
-	Timestamp time.Time
+  IP        string
+  Timestamp time.Time
 }
 
 var (
-	requestsLog   []RequestEntry
-	logMutex      sync.Mutex
-	startTime     time.Time
+  requestsLog     []RequestEntry
+  logMutex        sync.Mutex
+  startTime       time.Time
+  openConnections int
+  openConnMutex   sync.Mutex
 )
 
 func getServerIP() string {
-	conn, err := net.Dial("udp", "10.255.255.255:1")
-	if err != nil {
-		return "127.0.0.1"
-	}
-	defer conn.Close()
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
+  conn, err := net.Dial("udp", "10.255.255.255:1")
+  if err != nil {
+    return "127.0.0.1"
+  }
+  defer conn.Close()
+  localAddr := conn.LocalAddr().(*net.UDPAddr)
+  return localAddr.IP.String()
 }
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
-	logMutex.Lock()
-	requestsLog = append(requestsLog, RequestEntry{IP: r.RemoteAddr, Timestamp: time.Now()})
-	logMutex.Unlock()
-	http.Redirect(w, r, "/monitor", http.StatusFound)
+  logMutex.Lock()
+  requestsLog = append(requestsLog, RequestEntry{IP: r.RemoteAddr, Timestamp: time.Now()})
+  logMutex.Unlock()
+  http.Redirect(w, r, "/monitor", http.StatusFound)
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
-	cutoff := time.Now().Add(-60 * time.Second)
-	logMutex.Lock()
-	count := 0
-	for _, entry := range requestsLog {
-		if entry.Timestamp.After(cutoff) {
-			count++
-		}
-	}
-	uptime := int(time.Since(startTime).Seconds())
-	logMutex.Unlock()
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"requests_last_60s": count,
-		"uptime_seconds":    uptime,
-	})
+  cutoff := time.Now().Add(-60 * time.Second)
+  logMutex.Lock()
+  count := 0
+  for _, entry := range requestsLog {
+    if entry.Timestamp.After(cutoff) {
+      count++
+    }
+  }
+  uptime := int(time.Since(startTime).Seconds())
+  logMutex.Unlock()
+
+  openConnMutex.Lock()
+  open := openConnections
+  openConnMutex.Unlock()
+
+  json.NewEncoder(w).Encode(map[string]interface{}{
+    "requests_last_60s": count,
+    "uptime_seconds":    uptime,
+    "open_connections":  open,
+  })
 }
 
 func resetHandler(w http.ResponseWriter, r *http.Request) {
-	logMutex.Lock()
-	requestsLog = nil
-	startTime = time.Now()
-	logMutex.Unlock()
-	w.Write([]byte("Requests log has been reset."))
+  logMutex.Lock()
+  requestsLog = nil
+  startTime = time.Now()
+  logMutex.Unlock()
+  w.Write([]byte("Requests log has been reset."))
 }
 
 func monitorHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.New("monitor").Parse(monitorHTML)
-	if err != nil {
-		http.Error(w, "Template error", 500)
-		return
-	}
-	tmpl.Execute(w, map[string]string{"ServerIP": getServerIP()})
+  tmpl, err := template.New("monitor").Parse(monitorHTML)
+  if err != nil {
+    http.Error(w, "Template error", 500)
+    return
+  }
+  tmpl.Execute(w, map[string]string{"ServerIP": getServerIP()})
 }
 
 func main() {
-	startTime = time.Now()
-	http.HandleFunc("/", indexHandler)
-	http.HandleFunc("/status", statusHandler)
-	http.HandleFunc("/reset", resetHandler)
-	http.HandleFunc("/monitor", monitorHandler)
+  startTime = time.Now()
+  http.HandleFunc("/", indexHandler)
+  http.HandleFunc("/status", statusHandler)
+  http.HandleFunc("/reset", resetHandler)
+  http.HandleFunc("/monitor", monitorHandler)
 
-	serverIP := getServerIP()
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		exec.Command("xdg-open", fmt.Sprintf("http://%s:8080/monitor", serverIP)).Start()
-	} else if runtime.GOOS == "windows" {
-		exec.Command("rundll32", "url.dll,FileProtocolHandler", fmt.Sprintf("http://%s:8080/monitor", serverIP)).Start()
-	}
+  server := &http.Server{
+    Addr: ":8080",
+    Handler: nil,
+    ConnState: func(conn net.Conn, state http.ConnState) {
+      openConnMutex.Lock()
+      switch state {
+      case http.StateNew:
+        openConnections++
+      case http.StateClosed, http.StateHijacked:
+        if openConnections > 0 {
+          openConnections--
+        }
+      }
+      openConnMutex.Unlock()
+    },
+  }
 
-	log.Printf("Server running on: http://%s:8080", serverIP)
-	http.ListenAndServe(":8080", nil)
+  serverIP := getServerIP()
+  if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+    exec.Command("xdg-open", fmt.Sprintf("http://%s:8080/monitor", serverIP)).Start()
+  } else if runtime.GOOS == "windows" {
+    exec.Command("rundll32", "url.dll,FileProtocolHandler", fmt.Sprintf("http://%s:8080/monitor", serverIP)).Start()
+  }
+
+  log.Printf("Server running on: http://%s:8080", serverIP)
+  log.Fatal(server.ListenAndServe())
 }
 
-const monitorHTML = `
-<!DOCTYPE html>
+const monitorHTML = `<!DOCTYPE html>
 <html>
 <head>
   <title>Requests Monitor - Traffic Light</title>
@@ -182,6 +206,11 @@ const monitorHTML = `
     <canvas id="redGauge" width="200" height="200"></canvas>
     <div id="redInfo"></div>
   </div>
+  <div class="gauge-container">
+    <h2 style="color: #66ccff;">Conexiones Abiertas</h2>
+    <canvas id="connGauge" width="200" height="200"></canvas>
+    <div id="connInfo"></div>
+  </div>
   <br>
   <button onclick="resetRequests()">Reset Log</button>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -189,7 +218,9 @@ const monitorHTML = `
     const greenThreshold = 1000;
     const yellowThreshold = 10000;
     const redThreshold = 100000;
-    let greenChart, yellowChart, redChart;
+    const maxConnections = 1000;
+    let greenChart, yellowChart, redChart, connChart;
+
     function createGauge(ctx, color, maxVal) {
       return new Chart(ctx, {
         type: 'doughnut',
@@ -204,17 +235,20 @@ const monitorHTML = `
         }
       });
     }
+
     function updateGauge(chart, value, maxVal) {
       if (value > maxVal) value = maxVal;
       chart.data.datasets[0].data = [value, maxVal - value];
       chart.update();
     }
+
     function fetchStatus() {
       fetch('/status')
         .then(response => response.json())
         .then(data => {
           let count = data.requests_last_60s;
           let uptime = data.uptime_seconds;
+          let openConns = data.open_connections;
           document.getElementById('uptime').innerText = uptime;
           let greenValue = Math.min(count, greenThreshold);
           let yellowValue = count > greenThreshold ? Math.min(count - greenThreshold, yellowThreshold - greenThreshold) : 0;
@@ -222,24 +256,30 @@ const monitorHTML = `
           updateGauge(greenChart, greenValue, greenThreshold);
           updateGauge(yellowChart, yellowValue, yellowThreshold - greenThreshold);
           updateGauge(redChart, redValue, redThreshold - yellowThreshold);
+          updateGauge(connChart, openConns, maxConnections);
           document.getElementById('greenInfo').innerText = greenValue + " / " + greenThreshold;
           document.getElementById('yellowInfo').innerText = yellowValue + " / " + (yellowThreshold - greenThreshold);
           document.getElementById('redInfo').innerText = redValue + " / " + (redThreshold - yellowThreshold);
+          document.getElementById('connInfo').innerText = openConns + " / " + maxConnections;
         })
         .catch(err => console.error(err));
     }
+
     function resetRequests() {
       fetch('/reset')
         .then(() => fetchStatus())
         .catch(err => console.error(err));
     }
+
     window.onload = () => {
       let greenCtx = document.getElementById('greenGauge').getContext('2d');
       let yellowCtx = document.getElementById('yellowGauge').getContext('2d');
       let redCtx = document.getElementById('redGauge').getContext('2d');
+      let connCtx = document.getElementById('connGauge').getContext('2d');
       greenChart = createGauge(greenCtx, '#00FF00', greenThreshold);
       yellowChart = createGauge(yellowCtx, '#FFFF00', yellowThreshold - greenThreshold);
       redChart = createGauge(redCtx, '#FF0000', redThreshold - yellowThreshold);
+      connChart = createGauge(connCtx, '#66CCFF', maxConnections);
       setInterval(fetchStatus, 1000);
       fetchStatus();
     };
