@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FILE="/tmp/k6_load_test.js"
+
+# -------------------------
+# Install k6 if necessary
+# -------------------------
+if ! command -v k6 >/dev/null 2>&1; then
+    echo "[*] k6 not found. Installing..."
+
+    if command -v brew >/dev/null 2>&1; then
+        brew install k6
+
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update
+        sudo apt-get install -y gpg curl
+
+        sudo mkdir -p /etc/apt/keyrings
+
+        curl -fsSL https://dl.k6.io/key.gpg \
+          | sudo gpg --dearmor --yes \
+          -o /etc/apt/keyrings/k6-archive-keyring.gpg
+
+        echo "deb [signed-by=/etc/apt/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+          | sudo tee /etc/apt/sources.list.d/k6.list >/dev/null
+
+        sudo apt-get update
+        sudo apt-get install -y k6
+
+    else
+        echo "[-] brew or apt-get required."
+        exit 1
+    fi
+fi
+
+echo
+echo "=== k6 Load Test Generator ==="
+echo
+
+# -------------------------
+# Target
+# -------------------------
+read -rp "Target URL (example: localhost:8080): " URL
+
+if [[ ! "$URL" =~ ^https?:// ]]; then
+    URL="http://$URL"
+fi
+
+# -------------------------
+# Virtual users
+# -------------------------
+read -rp "Virtual users [10]: " VUS
+VUS="${VUS:-10}"
+
+if ! [[ "$VUS" =~ ^[0-9]+$ ]] || (( VUS < 1 )); then
+    echo "[-] Invalid VU count."
+    exit 1
+fi
+
+# -------------------------
+# Duration
+# -------------------------
+read -rp "Duration [30s]: " DURATION
+DURATION="${DURATION:-30s}"
+
+if ! [[ "$DURATION" =~ ^[0-9]+(s|m|h)$ ]]; then
+    echo "[-] Invalid duration. Examples: 30s, 5m, 1h"
+    exit 1
+fi
+
+# -------------------------
+# p95
+# -------------------------
+read -rp "Maximum p95 latency in ms [500]: " P95
+P95="${P95:-500}"
+
+if ! [[ "$P95" =~ ^[0-9]+$ ]]; then
+    echo "[-] Invalid p95."
+    exit 1
+fi
+
+# -------------------------
+# Failure rate
+# -------------------------
+read -rp "Maximum failure rate % [1]: " FAIL_PERCENT
+FAIL_PERCENT="${FAIL_PERCENT:-1}"
+
+if ! [[ "$FAIL_PERCENT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "[-] Invalid failure rate."
+    exit 1
+fi
+
+FAIL_RATE=$(awk -v p="$FAIL_PERCENT" 'BEGIN { printf "%.6f", p / 100 }')
+
+# Escape single quotes for JS
+JS_URL="${URL//\'/\\\'}"
+
+# -------------------------
+# Generate k6 test
+# -------------------------
+cat > "$FILE" <<EOF
+import http from 'k6/http';
+import { check } from 'k6';
+
+export const options = {
+  vus: ${VUS},
+  duration: '${DURATION}',
+
+  thresholds: {
+    http_req_duration: ['p(95)<${P95}'],
+    http_req_failed: ['rate<${FAIL_RATE}'],
+  },
+};
+
+export default function () {
+  const response = http.get('${JS_URL}');
+
+  check(response, {
+    'status is 2xx or 3xx': (r) =>
+      r.status >= 200 && r.status < 400,
+  });
+}
+EOF
+
+echo
+echo "[+] Test generated: $FILE"
+echo
+echo "Target:       $URL"
+echo "VUs:          $VUS"
+echo "Duration:     $DURATION"
+echo "p95 limit:    ${P95} ms"
+echo "Failure rate: ${FAIL_PERCENT}%"
+echo
+
+read -rp "Run test now? [Y/n]: " RUN
+RUN="${RUN:-Y}"
+
+if [[ "$RUN" =~ ^[Yy]$ ]]; then
+    echo
+    k6 run "$FILE"
+else
+    echo
+    echo "Run with:"
+    echo "k6 run $FILE"
+fi
+
+

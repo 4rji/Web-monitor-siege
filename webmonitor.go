@@ -184,13 +184,13 @@ const monitorHTML = `<!DOCTYPE html>
 </head>
 <body>
   <h1>Requests Monitor (Last 60 Seconds)</h1>
-  <p>Acceda directamente en: <a href="http://{{.ServerIP}}:8080/monitor">http://{{.ServerIP}}:8080/monitor</a></p>
+  <p>Access the monitor directly at: <a href="http://{{.ServerIP}}:8080/monitor">http://{{.ServerIP}}:8080/monitor</a></p>
   <div class="instructions">
-    <p>Para pruebas, ejecute en otra terminal:</p>
+    <p>For testing, run one of these commands in another terminal:</p>
     <code>siege -c 255 -r 1000 http://{{.ServerIP}}:8080/</code><br>
     <code>while true; do curl -s http://{{.ServerIP}}:8080/ > /dev/null; done</code>
   </div>
-  <div class="uptime">Tiempo activo: <span id="uptime"></span> segundos</div>
+  <div class="uptime">Uptime: <span id="uptime"></span> seconds</div>
   <div class="gauge-container">
     <h2 style="color: #00ff00;">Green Stage (0 - 1000)</h2>
     <canvas id="greenGauge" width="200" height="200"></canvas>
@@ -207,7 +207,7 @@ const monitorHTML = `<!DOCTYPE html>
     <div id="redInfo"></div>
   </div>
   <div class="gauge-container">
-    <h2 style="color: #66ccff;">Conexiones Abiertas</h2>
+    <h2 style="color: #66ccff;">Open Connections</h2>
     <canvas id="connGauge" width="200" height="200"></canvas>
     <div id="connInfo"></div>
   </div>
