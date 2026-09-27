@@ -5,12 +5,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 
 	"k6web/internal/k6bin"
@@ -18,8 +22,22 @@ import (
 	"k6web/web"
 )
 
+// portAttempts is how many consecutive ports are tried when the requested one
+// is already in use.
+const portAttempts = 20
+
 func main() {
-	addr := env("ADDR", ":8080")
+	port := flag.Int("port", 0, "port to listen on (default 8080, or the port in ADDR); if busy, the next free port is used")
+	flag.Parse()
+
+	host, basePort := parseAddr(env("ADDR", ":8080"))
+	if *port != 0 {
+		basePort = *port
+	}
+	if basePort < 1 || basePort > 65535 {
+		log.Fatalf("invalid port %d", basePort)
+	}
+
 	limits := k6runner.Limits{
 		MaxVUs:      envInt("MAX_VUS", 200),
 		MaxDuration: envDuration("MAX_DURATION", 10*time.Minute),
@@ -35,13 +53,70 @@ func main() {
 	mux.Handle("GET /", http.FileServerFS(web.Files))
 	mux.Handle("POST /api/run", &runHandler{k6Bin: k6Bin, limits: limits, busy: make(chan struct{}, 1)})
 
+	ln, err := listen(host, basePort)
+	if err != nil {
+		log.Fatal(err)
+	}
+	actual := ln.Addr().(*net.TCPAddr).Port
+	if actual != basePort {
+		log.Printf("port %d is in use, using %d instead", basePort, actual)
+	}
+	log.Printf("max VUs %d, max duration %s", limits.MaxVUs, limits.MaxDuration)
+	for _, u := range urls(host, actual) {
+		log.Printf("open %s", u)
+	}
+
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("listening on %s (max VUs %d, max duration %s)", addr, limits.MaxVUs, limits.MaxDuration)
-	log.Fatal(srv.ListenAndServe())
+	log.Fatal(srv.Serve(ln))
+}
+
+// parseAddr splits an ADDR value like ":8080" or "127.0.0.1:9090".
+func parseAddr(addr string) (string, int) {
+	host, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		log.Fatalf("invalid ADDR %q: %v", addr, err)
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil {
+		log.Fatalf("invalid port in ADDR %q", addr)
+	}
+	return host, port
+}
+
+// listen opens port, or the next free one if it is already in use.
+func listen(host string, port int) (net.Listener, error) {
+	var err error
+	for p := port; p < port+portAttempts && p <= 65535; p++ {
+		var ln net.Listener
+		ln, err = net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
+		if err == nil {
+			return ln, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("no free port between %d and %d: %w", port, port+portAttempts-1, err)
+}
+
+// urls lists where the UI can be opened: localhost plus this machine's LAN
+// addresses when listening on all interfaces.
+func urls(host string, port int) []string {
+	p := strconv.Itoa(port)
+	if host != "" && host != "0.0.0.0" && host != "::" {
+		return []string{"http://" + net.JoinHostPort(host, p)}
+	}
+	list := []string{"http://localhost:" + p}
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLoopback() {
+			list = append(list, "http://"+net.JoinHostPort(ipn.IP.String(), p))
+		}
+	}
+	return list
 }
 
 // event is one line of the NDJSON stream returned by /api/run.
